@@ -68,9 +68,10 @@ def get_Coops_longName(station):
     path = "//sml:identifier[@name='longName']/sml:Term/sml:value/text()"
     namespaces = dict(sml="http://www.opengis.net/sensorML/1.0.1")
     longName = root.xpath(path, namespaces=namespaces)
-    if len(longName) == 0:
-        longName = station
-    return longName[0]
+    if not longName:
+        return station
+    else:
+        return longName[0]
 
 
 def coops2df(collector, coops_id, sos_name):

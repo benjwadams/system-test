@@ -77,27 +77,18 @@ def get_Coops_longName(station):
         return longName[0]
 
 
-def coops2df(collector, coops_id, sos_name):
+def coops2df(collector, coops_id, sos_name, needs_vertical_datum=False):
     """Request CSV response from SOS and convert to Pandas DataFrames."""
     collector.features = [coops_id]
     collector.variables = [sos_name]
-    long_name = get_Coops_longName(coops_id)
-
-    try:
-        response = collector.raw(responseFormat="text/csv")
-        data_df = read_csv(BytesIO(response.encode('utf-8')),
-                           parse_dates=True,
-                           index_col='date_time')
+    response = collector.raw(responseFormat="text/csv")
+    data_df = read_csv(BytesIO(response.encode('utf-8')),
+                        parse_dates=True,
+                        index_col='date_time')
+    if needs_vertical_datum:
         col = 'water_surface_height_above_reference_datum (m)'
-        if False:
-            data_df['Observed Data'] = (data_df[col] -
-                                        data_df['vertical_position (m)'])
         data_df['Observed Data'] = data_df[col]
-    except ExceptionReport as e:
-        warn("Station %s is not NAVD datum. %s" % (long_name, e))
-        data_df = DataFrame()  # Assing an empty DataFrame for now.
-
-    data_df.name = long_name
+    data_df.name = get_Coops_longName(coops_id)
     return data_df
 
 

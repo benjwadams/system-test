@@ -36,15 +36,17 @@ from iris.exceptions import CoordinateNotFoundError, ConstraintMismatchError
 import matplotlib.pyplot as plt
 from owslib.csw import CatalogueServiceWeb
 from owslib import fes
+from owslib.ows import ExceptionReport
 import pandas as pd
 from pyoos.collectors.ndbc.ndbc_sos import NdbcSos
 import requests
+from warnings import warn
 
-from utilities import fes_date_filter, coops2df, find_timevar, find_ij, nearxy, service_urls, mod_df, get_coordinates
+from utilities import fes_date_filter, coops2df, find_timevar, find_ij, get_Coops_longName, nearxy, service_urls, mod_df, get_coordinates
 
 # <headingcell level=4>
 
-# Speficy Temporal and Spatial conditions
+# Specify Temporal and Spatial conditions
 
 # <codecell>
 
@@ -205,13 +207,21 @@ ts = pd.DataFrame(index=ts_rng)
 
 Hs_obs_df = []
 Tp_obs_df = []
+obs_frames = []
 
 for sta in stations:
-    b=coops2df(collector, sta, sos_name)
+    print(sta, get_Coops_longName(sta))
+    try:
+        #TODO: handle timeout errors gracefully and continue to next station. (is exception thrown?)
+        b=coops2df(collector, sta, sos_name, False)
+    except KeyError as k:
+        warn("Station %s is not NAVD datum, skipping station. No such field %s" % (get_Coops_longName(sta), k))
+    
     # limit interpolation to 10 points (10 @ 6min = 1 hour)
-    Hs_obs_df.append(pd.DataFrame(pd.concat([b, ts],axis=1)['Observed Wave Height Data']))
+    #Should we still use empty frames, i.e. to put on map
+    Hs_obs_df.append(pd.DataFrame(pd.concat([b, ts],axis=1)['sea_surface_wave_significant_height (m)']))
     Hs_obs_df[-1].name=b.name
-    Tp_obs_df.append(pd.DataFrame(pd.concat([b, ts],axis=1)['Observed Peak Period Data']))
+    Tp_obs_df.append(pd.DataFrame(pd.concat([b, ts],axis=1)['sea_surface_wave_peak_period (s)']))
     Tp_obs_df[-1].name=b.name
     
 
@@ -261,8 +271,6 @@ for n in range(len(Hs_obs_df)):
         axes[1].set_title(Tp_obs_df[n].name)
         axes[1].set_ylabel('Tp (s)')
 
-
-
 # <markdowncell>
 
 # ###Get model output from OPeNDAP URLS
@@ -270,7 +278,7 @@ for n in range(len(Hs_obs_df)):
 
 # <codecell>
 
-print data_dict['waves']['names']
+print(data_dict['waves']['names'])
 name_in_list = lambda cube: cube.standard_name in data_dict['waves']['names']
 constraint = iris.Constraint(cube_func=name_in_list)
  
@@ -284,7 +292,9 @@ max_dist = 0.04
 min_var = 0.01
 for url in dap_urls:
     try:
+        print(url, 'loading cube')
         a = iris.load_cube(url, constraint)
+        print 'loading cube'
         # convert to units of meters
         # a.convert_units('m')     # this isn't working for unstructured data
         # take first 20 chars for model name
@@ -301,7 +311,7 @@ for url in dap_urls:
 
         # Only proceed if we have data in the range requested.
         if istart != istop:
-            nsta = len(obs_lon)
+            nsta = len(Hs_obs_df)
             if len(r) == 3:
                 print('[Structured grid model]:', url)
                 d = a[0, :, :].data
@@ -341,7 +351,6 @@ for url in dap_urls:
     except (ValueError, RuntimeError, CoordinateNotFoundError,
             ConstraintMismatchError) as e:
         warn("\n%s\n" % e)
-        pass
 
 # <markdowncell>
 
@@ -350,7 +359,7 @@ for url in dap_urls:
 # <codecell>
 
 for n in range(len(Hs_obs_df)):
-    if Hs_obs_df[n]['Observed Wave Height Data'].count() > min_data_pts:
+    if Hs_obs_df[n]['sea_surface_wave_significant_height (m)'].count() > min_data_pts:
         ax = Hs_obs_df[n].plot(figsize=(14, 6), title=Hs_obs_df[n].name, legend=False)
         plt.setp(ax.lines[0], linewidth=4.0, color='0.7', zorder=1, marker='.')
         ax.legend()

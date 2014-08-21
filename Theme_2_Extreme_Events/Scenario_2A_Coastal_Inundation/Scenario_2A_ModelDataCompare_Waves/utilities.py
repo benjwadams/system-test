@@ -59,10 +59,13 @@ def fes_date_filter(start_date='1900-01-01', stop_date='2100-01-01',
 def get_Coops_longName(station):
     """Get longName for specific station from COOPS SOS using DescribeSensor
     request."""
-    url = ('http://opendap.co-ops.nos.noaa.gov/ioos-dif-sos/SOS?service=SOS&'
-           'request=DescribeSensor&version=1.0.0&'
-           'outputFormat=text/xml;subtype="sensorML/1.0.1"&'
-           'procedure=urn:ioos:station:NOAA.NOS.CO-OPS:%s') % station
+    #url = ('http://opendap.co-ops.nos.noaa.gov/ioos-dif-sos/SOS?service=SOS&'
+    #       'request=DescribeSensor&version=1.0.0&'
+    #       'outputFormat=text/xml;subtype="sensorML/1.0.1"&'
+    #       'procedure=urn:ioos:station:NOAA.NOS.CO-OPS:%s') % station
+    url = ('http://sdf.ndbc.noaa.gov/sos/server.php?SOS&service=SOS&'
+           'procedure=urn:ioos:station:wmo:%s&request=DescribeSensor&'
+           'version=1.0.0&outputFormat=text/xml;subtype="sensorML/1.0.1"') % station
     tree = etree.parse(urlopen(url))
     root = tree.getroot()
     path = "//sml:identifier[@name='longName']/sml:Term/sml:value/text()"

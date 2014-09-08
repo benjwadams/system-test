@@ -28,16 +28,22 @@
 # <codecell>
 
 import matplotlib.pyplot as plt
+
 import numpy as np
 
 from owslib.csw import CatalogueServiceWeb
 from owslib import fes
+from owslib.ows import ExceptionReport
 
 import folium
 import pandas as pd
+import itertools
 import datetime as dt
 from utilities import fes_date_filter, service_urls, get_coordinates, inline_map, css_styles, insert_progress_bar, update_progress_bar
 css_styles()
+
+import multiprocessing
+import signal
 
 # <markdowncell>
 
@@ -129,11 +135,17 @@ endpoints = ['http://www.nodc.noaa.gov/geoportal/csw',
              'http://cmgds.marine.usgs.gov/geonetwork/srv/en/csw',
              'http://cida.usgs.gov/gdp/geonetwork/srv/en/csw',
              'http://geodiscover.cgdi.ca/wes/serviceManagerCSW/csw',
-             'http://geoport.whoi.edu/gi-cat/services/cswiso',
-             'http://cwic.csiss.gmu.edu/cwicv1/discovery']
+             # might not be a CSW
+             #'http://geoport.whoi.edu/gi-cat/services/cswiso',
+            
+             #throws request limitation if max_records > 200
+             
+             #'http://cwic.csiss.gmu.edu/cwicv1/discovery'
+             ]
 
 # Set the maximum number of records the CSW will return
-max_records = 1000
+#max_records = 1000
+max_records = 200
 
 # <markdowncell>
 
@@ -147,25 +159,29 @@ max_records = 1000
 
 # <codecell>
 
-# Add a waitbar to monitor status
+#for loop version
 divid = insert_progress_bar(title='Searching catalogs. Please wait...', color='red')
 
-# Save all of the results in a list of Dataframes
 results = {}
 all_data = []
 
 count = 0
-# Loop through the csw endpoints
 for endpoint in endpoints:
     print '\n' + endpoint
 
-    csw = CatalogueServiceWeb(endpoint, timeout=60)
+    try:
+        csw = CatalogueServiceWeb(endpoint, timeout=60)
+    # continue processing if an endpoint is down or otherwise nonfunctional
+    # but report the exception returned from OWSLib
+    except ExceptionReport as e:
+        print('Error accessing CSW endpoint "{0}". Error report: {1}'.format(endpoint, e))
+        continue
     # loop through the variables
     for var_name in names_dict:
-#         print '\n' + var_name.upper()
+        print '\n' + var_name.upper()
         num_recs = []
         for location, bounding_box in locations.iteritems():
-#             print location
+            print location
             
             bbox = fes.BBox(bounding_box)
             #use the search name to create search filter
@@ -177,28 +193,28 @@ for endpoint in endpoints:
             filter_list = [fes.And([ bbox, or_filt])]
             # try request using multiple filters "and" syntax: [[filter1,filter2]]
             try:
-                csw.getrecords2(constraints=filter_list, maxrecords=max_records, esn='full')
+                csw.getrecords2(constraints=filter_list, maxrecords=max_records, resulttype='hits')
             except Exception as e:
                 print '\t' + 'ERROR - ' + str(e)
                 num_recs.append(np.NaN)
             else:
-#                 print '\t' + str(len(csw.records)) + " csw records found"
-                num_recs.append(len(csw.records))
+                print csw.results['matches']
+                num_recs.append(csw.results['matches'])
             
         results[var_name] = np.array(num_recs)
 
     # Save the results
-    all_data.append(pd.DataFrame(results, index=locations.keys()))
-    all_data[-1].name = endpoint
-                     
+
+    prod = list(itertools.product([endpoint], locations.keys()))
+    mi = pd.MultiIndex.from_tuples(prod, names=['endpoint', 'location'])
+    all_data.append(pd.DataFrame(results, index=mi))
+
     # Update progress bar
     count += 1
     percent_compelte = (float(count)/float(len(endpoints)))*100
     update_progress_bar(divid, percent_compelte)
-#                 # Print titles
-#                 for rec, item in csw.records.items():
-#                     print(item.title)
-        
+    
+all_data_concat = pd.concat(alldata)
 
 # <markdowncell>
 
@@ -210,12 +226,37 @@ for endpoint in endpoints:
 
 # <codecell>
 
-for df in all_data:
+alldata_concat = pd.concat(all_data)
+endpoint_group = alldata_concat.groupby(level=0)
+# can uncomment this for a terser, but less well annotated plot
+# endpoint_group.plot(kind='barh')
+for grp_name, grp in endpoint_group:
     fig, ax = plt.subplots()
-    df.plot(ax=ax, kind="barh", figsize=(10, 8,), title=df.name)
+    # eliminate endpoint from index since it will be the graph title
+    grp.reset_index(0, drop=True).plot(ax=ax, kind="barh", figsize=(10, 8,),
+                                       title=grp_name)
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    ax.set_xlim([0, max_records])
     ax.set_xlabel('Number of records')
+
+# <markdowncell>
+
+# #### Let's plot the results in a bar graph
+
+# <codecell>
+
+# By location across all endpoints
+location_group = alldata_concat.fillna(0).groupby(level='location').sum()
+ax = location_group.plot(kind='barh', title='All records by location', figsize=(10, 8))
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+ax.set_xlabel('Number of records')
+print(location_group)
+#for grp_name, grp in location_group:
+#    fig, ax = plt.subplots()
+#    # eliminate location from index since it will be the graph title
+#    grp.reset_index(1, drop=True).plot(ax=ax, kind="barh", figsize=(10, 8,),
+#                                       title=grp_name, yticks=range(8))
+#    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+#    ax.set_xlabel('Number of records')
 
 # <markdowncell>
 
@@ -248,13 +289,19 @@ count = 0
 for endpoint in endpoints:
     print '\n' + endpoint
 
-    csw = CatalogueServiceWeb(endpoint, timeout=60)
+    try:
+        csw = CatalogueServiceWeb(endpoint, timeout=60)
+    # continue processing if an endpoint is down or otherwise nonfunctional
+    # but report the exception returned from OWSLib
+    except ExceptionReport as e:
+        print('Error accessing CSW endpoint "{0}". Error report: {1}'.format(endpoint, e))
+        continue
     # loop through the variables
     for var_name in names_dict:
-#         print '\n' + var_name.upper()
+        print '\n' + var_name.upper()
         num_recs = []
         for location, bounding_box in locations.iteritems():
-#             print location
+            print location
             # convert User Input into FES filters
             start, stop = fes_date_filter(start_date, stop_date)
             bbox = fes.BBox(bounding_box)
@@ -268,28 +315,37 @@ for endpoint in endpoints:
             filter_list = [fes.And([ bbox, start, stop, or_filt])]
             # try request using multiple filters "and" syntax: [[filter1,filter2]]
             try:
-                csw.getrecords2(constraints=filter_list, maxrecords=max_records, esn='full')
+                csw.getrecords2(constraints=filter_list, #maxrecords=max_records,
+                                resulttype='hits')
+                
             except Exception as e:
                 print '\t' + 'ERROR - ' + str(e)
                 num_recs.append(np.NaN)
             else:
 #                 print '\t' + str(len(csw.records)) + " csw records found"
-                num_recs.append(len(csw.records))
+                print csw.results['matches']
+                num_recs.append(csw.results['matches'])
             
         results[var_name] = np.array(num_recs)
 
     # Save the results
-    recent_data.append(pd.DataFrame(results, index=locations.keys()))
-    recent_data[-1].name = endpoint
+    prod = list(itertools.product([endpoint], locations.keys()))
+    mi = pd.MultiIndex.from_tuples(prod, names=['endpoint', 'location'])
+    df = pd.DataFrame(results, index=mi)
+    # if all the entries in the entire endpoint have zero counts, do not include this
+    # endpoint provider
+    if (df.stack().fillna(0) != 0).any():
+        recent_data.append(df)
+    else:
+        continue
+
                      
     # Update progress bar
     count += 1
     percent_compelte = (float(count)/float(len(endpoints)))*100
     update_progress_bar(divid, percent_compelte)
-#                 # Print titles
-#                 for rec, item in csw.records.items():
-#                     print(item.title)
-        
+
+recent_data_concat = pd.concat(recent_data)
 
 # <markdowncell>
 
@@ -297,12 +353,17 @@ for endpoint in endpoints:
 
 # <codecell>
 
-for df in recent_data:
+endpoint_group_recent = recent_data_concat.groupby(level='endpoint')
+# can uncomment this for a plot with tuple groups as y axis marks
+#endpoint_group.plot(kind='barh', figsize=(10, 8,))
+for grp_name, grp in endpoint_group_recent:
     fig, ax = plt.subplots()
-    df.plot(ax=ax, kind="barh", figsize=(10, 8,), title=df.name, stacked=True)
+    # eliminate endpoint from index since it will be the graph title
+    grp.reset_index(0, drop=True).plot(ax=ax, kind="barh", figsize=(10, 8,),
+                                       title=grp_name)
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    ax.set_xlim([0, max_records])
     ax.set_xlabel('Number of records')
+    
 
 # <markdowncell>
 
@@ -310,28 +371,26 @@ for df in recent_data:
 
 # <codecell>
 
-# Create a list of Dataframes by variable name
-variables_df = []
-
-for var_name in names_dict:
-    temp_df = pd.DataFrame()
-    for df in recent_data:
-        # Loop through the endpoint dataframes and build a data frame for each variable
-        test_df = df[np.isfinite(df[var_name])]
-        if not test_df.empty:
-            temp_df[df.name] = df[var_name]
-    variables_df.append(temp_df)
-    variables_df[-1].name = var_name
+#return counts of each variables as a series and place the variable type as the first index
+stacked = recent_data_concat.stack().reorder_levels([2,1,0])
+stacked.index.names = ['variable_type', 'location', 'endpoint']
+stacked.name = 'record_counts'
+#stacked.index.names = stacked.index.names[['variable_type']
+by_var = stacked.unstack()
+for grpname, grps in by_var.groupby(level='variable_type'):
+   # get rid of variable index since we are already grouping by it and have its name
+   cur_grp = grps.reset_index(level='variable_type', drop=True)
+   fig, ax = plt.subplots()
+   cur_grp.plot(ax=ax, kind='barh', stacked=True, figsize=(10, 8,), legend=False, title=grpname)
+   ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+   ax.set_xlabel('Number of records')
 
 # <codecell>
 
-for df in variables_df:
-    fig, ax = plt.subplots()
-    
-    df.plot(ax=ax, kind="barh", figsize=(10, 8,), title=df.name, colormap="Set1", stacked=True)
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-#     ax.set_xlim([0, max_records])
-    ax.set_xlabel('Number of records')
+# show 
+ax = by_var.groupby(level='variable_type').sum().plot(kind='bar',
+                                                      figsize=(10, 8,),
+                                                      title='Recent variable counts by endpoint')
 
 # <markdowncell>
 

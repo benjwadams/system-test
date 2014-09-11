@@ -49,6 +49,7 @@ from owslib import fes
 import pandas as pd
 from pyoos.collectors.coops.coops_sos import CoopsSos
 from operator import itemgetter
+from scipy.spatial import ConvexHull
 
 from utilities import (fes_date_filter, collector2df, find_timevar, find_ij, nearxy, service_urls, mod_df, 
                        get_coordinates, get_station_longName, get_NERACOOS_SOS_data, inline_map, css_styles)
@@ -65,7 +66,7 @@ css_styles()
 
 # <codecell>
 
-bounding_box_type = "box" 
+bounding_box_type = "box"
 
 # Bounding Box [lon_min, lat_min, lon_max, lat_max]
 area = {'Hawaii': [-160.0, 18.0, -154., 23.0],
@@ -225,17 +226,20 @@ obs_lat = [sta for sta in obs_loc_df['latitude (degree)']]
 
 # <codecell>
 
-ts_rng = pd.date_range(start=start_date, end=end_date)
+ts_rng = pd.date_range(start=start_date, end=end_date, name='date_time')
 ts = pd.DataFrame(index=ts_rng)
 
 # Save all of the observation data into a list of dataframes
 obs_df = []
 station_long_names = []
 for sta in station_ids:
+    #actually a series
     raw_df = collector2df(collector, sta, sos_name)
     
-    col = 'Observed Data'
-    concatenated = pd.concat([raw_df, ts], axis=1)[col]
+    
+    #col = 'Observed Data'
+    concatenated = raw_df.reindex(raw_df.index.union(ts_rng))['Observed Data']
+    #%time concatenated = pd.concat([raw_df, ts], axis=1)[col]
     obs_df.append(pd.DataFrame(concatenated))
     obs_df[-1].name = raw_df.name
     obs_df[-1].provider = raw_df.provider
@@ -256,7 +260,10 @@ for get_caps_url in sos_urls:
         raw_df = get_NERACOOS_SOS_data(get_caps_url, 'http://mmisw.org/ont/cf/parameter/sea_water_temperature', iso_start, iso_end)
         if not raw_df.empty:
             col = 'Observed Data'
-            concatenated = pd.concat([raw_df, ts], axis=1)[col]
+            #attempting to reindex fails due to duplicate ts entries, so concat instead
+            #concatenated = pd.concat([raw_df, ts], axis=1)[col]
+            #concatenated = raw_df.reindex(raw_df.index.union(ts_rng))[col]
+            concatenated = raw_df.merge(ts, how='outer', left_index=True, right_index=True)
             obs_df.append(pd.DataFrame(concatenated))
             obs_df[-1].name = raw_df.name
             obs_df[-1].provider = raw_df.provider
@@ -411,7 +418,8 @@ for url in dap_urls:
     except (ValueError, RuntimeError, CoordinateNotFoundError,
             ConstraintMismatchError) as e:
         warn("\n%s\n" % e)
-        pass
+    except MemoryError as e:
+        warn("Ran out of memory while attempting to load model '%s'! %s\n" % (url, e))
 
 # <markdowncell>
 
@@ -424,8 +432,7 @@ for url in dap_urls:
 
 # <codecell>
 
-count = 0
-for df in obs_df:
+for count, df in enumerate(obs_df):
     if not model_df[count].empty and not df.empty:
         fig, ax = plt.subplots(figsize=(20,5))
         
@@ -439,8 +446,6 @@ for df in obs_df:
         ax.legend(loc='right')
         plt.show()
 
-    count += 1
-
 # <markdowncell>
 
 # ### Let's look at the spatial resolution of the obs and model data
@@ -453,23 +458,29 @@ m = folium.Map(location=[lat_center, lon_center], zoom_start=6)
 
 url = 'http://geoport.whoi.edu/thredds/dodsC/coawst_4/use/fmrc/coawst_4_use_best.ncd'
 nc_ds = netCDF4.Dataset(url)
-# print nc_ds.variables
-time  = nc_ds.variables['time']
+# unused
+#time  = nc_ds.variables['time']
 lat  = nc_ds.variables['lat_rho'][:]
 lon  = nc_ds.variables['lon_rho'][:]
-
-# Now flatten the lat lon arrays to 1-D
-flat_lat = [x for sublist in lat for x in sublist]
-flat_lon = [x for sublist in lon for x in sublist]
 nc_ds.close()
+#flatten coordinates
+model_points = np.array([lat.flatten(), lon.flatten()]).transpose()
 
-for lat, lon in zip(flat_lat, flat_lon):
-    if (lon > bounding_box[0] and lon < bounding_box[2]) and (lat > bounding_box[1] and lat < bounding_box[3]):
-        m.circle_marker([lat, lon]) #popup=str(lat)+','+str(lon))
+#why aren't parens sufficient here without backslash before newline?
+filter_cond = ((model_points[:,1] > bounding_box[0]) &\
+               (model_points[:,1] < bounding_box[2]) &\
+               (model_points[:,0] > bounding_box[1]) &\
+               (model_points[:,0] < bounding_box[3]))   
+
+#filter out points outside bbox and then generate convex hull from remaining points
+model_points_filt = model_points[filter_cond,:]
+hull = ConvexHull(model_points_filt)
+hullArr = model_points_filt[hull.vertices]
+#folium does not accept polygon constructors currently, so make sure the polyline generated is closed
+hullClosed = np.vstack((hullArr, hullArr[0,:]))
 
 # Now overlay the obs stattions                
-n = 0
-for df in obs_df:
+for n, df in enumerate(obs_df):
     #get the station data from the sos end point
     longname = df.name
     lat = obs_lat[n]
@@ -480,11 +491,16 @@ for df in obs_df:
         color = 'blue'
     popup_string = ('<b>Station:</b><br>'+ str(longname))
     m.simple_marker([lat, lon], popup=popup_string, marker_color=color)
-    n += 1
     
 m.line(get_coordinates(bounding_box,bounding_box_type), line_color='#FF0000', line_weight=5)
+m.line(hullClosed, line_color='#00FF00', line_weight=5)
 
 inline_map(m)
+
+# <codecell>
+
+#convex hull approximation is highly reasonable, as the lon/lat extent is rectangular
+plt.scatter(model_points[:,1], model_points[:,0], marker='.', color='blue')
 
 # <markdowncell>
 
